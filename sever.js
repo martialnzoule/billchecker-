@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { Pool } = require('pg');
+const { sql } = require('@vercel/postgres');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cloudinary = require('cloudinary').v2;
@@ -17,22 +17,6 @@ cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-// Configuration PostgreSQL
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-// Test connexion DB
-pool.query('SELECT NOW()', (err, res) => {
-    if (err) {
-        console.error('❌ Erreur connexion PostgreSQL:', err);
-    } else {
-        console.log('✅ Connecté à PostgreSQL');
-        initDatabase();
-    }
 });
 
 // Middleware
@@ -50,11 +34,11 @@ const upload = multer({
     limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-// Initialiser les tables PostgreSQL
+// Initialiser les tables
 async function initDatabase() {
     try {
         // Table users
-        await pool.query(`
+        await sql`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(255) UNIQUE NOT NULL,
@@ -63,10 +47,10 @@ async function initDatabase() {
                 role VARCHAR(50) DEFAULT 'user',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `;
 
         // Table scans
-        await pool.query(`
+        await sql`
             CREATE TABLE IF NOT EXISTS scans (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id),
@@ -79,10 +63,10 @@ async function initDatabase() {
                 recommendation TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `;
 
         // Table alerts
-        await pool.query(`
+        await sql`
             CREATE TABLE IF NOT EXISTS alerts (
                 id SERIAL PRIMARY KEY,
                 scan_id INTEGER REFERENCES scans(id),
@@ -91,21 +75,33 @@ async function initDatabase() {
                 resolved BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `;
 
         // Créer admin par défaut
         const defaultPassword = await bcrypt.hash('admin123', 10);
-        await pool.query(`
-            INSERT INTO users (username, email, password, role) 
-            VALUES ('admin', 'admin@billchecker.com', $1, 'admin')
-            ON CONFLICT (username) DO NOTHING
-        `, [defaultPassword]);
+        
+        // Vérifier si admin existe
+        const existingAdmin = await sql`
+            SELECT * FROM users WHERE username = 'admin'
+        `;
+        
+        if (existingAdmin.rows.length === 0) {
+            await sql`
+                INSERT INTO users (username, email, password, role) 
+                VALUES ('admin', 'admin@billchecker.com', ${defaultPassword}, 'admin')
+            `;
+        }
 
-        console.log('✅ Tables créées et admin initialisé');
+        console.log('✅ Database initialized');
 
     } catch (error) {
-        console.error('❌ Erreur init DB:', error);
+        console.error('❌ Error initializing database:', error);
     }
+}
+
+// Initialiser la DB au démarrage (seulement en développement ou première fois)
+if (process.env.INIT_DB === 'true') {
+    initDatabase();
 }
 
 // Fonction pour uploader vers Cloudinary
@@ -165,10 +161,11 @@ app.post('/api/auth/register', async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const result = await pool.query(
-            'INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id',
-            [username, email, hashedPassword]
-        );
+        const result = await sql`
+            INSERT INTO users (username, email, password) 
+            VALUES (${username}, ${email}, ${hashedPassword}) 
+            RETURNING id
+        `;
 
         res.status(201).json({ 
             message: 'Utilisateur créé',
@@ -176,7 +173,7 @@ app.post('/api/auth/register', async (req, res) => {
         });
 
     } catch (error) {
-        if (error.constraint) {
+        if (error.message.includes('duplicate') || error.message.includes('unique')) {
             return res.status(400).json({ error: 'Username ou email déjà utilisé' });
         }
         console.error('Erreur inscription:', error);
@@ -189,10 +186,9 @@ app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
 
-        const result = await pool.query(
-            'SELECT * FROM users WHERE username = $1',
-            [username]
-        );
+        const result = await sql`
+            SELECT * FROM users WHERE username = ${username}
+        `;
 
         const user = result.rows[0];
 
@@ -262,29 +258,21 @@ app.post('/api/scan/analyze', authenticateToken, upload.single('image'), async (
         };
 
         // Sauvegarder dans la DB
-        const result = await pool.query(
-            `INSERT INTO scans (user_id, currency, image_url, authenticity, confidence, features_detected, warnings, recommendation)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-            [
-                req.user.id,
-                currency,
-                imageUrl,
-                analysis.authenticity,
-                analysis.confidence,
-                JSON.stringify(analysis.features_detected),
-                JSON.stringify(analysis.warnings),
-                analysis.recommendation
-            ]
-        );
+        const result = await sql`
+            INSERT INTO scans (user_id, currency, image_url, authenticity, confidence, features_detected, warnings, recommendation)
+            VALUES (${req.user.id}, ${currency}, ${imageUrl}, ${analysis.authenticity}, ${analysis.confidence}, 
+                    ${JSON.stringify(analysis.features_detected)}, ${JSON.stringify(analysis.warnings)}, ${analysis.recommendation})
+            RETURNING id
+        `;
 
         const scanId = result.rows[0].id;
 
         // Créer alerte si suspect
         if (analysis.authenticity === 'SUSPICIOUS') {
-            await pool.query(
-                'INSERT INTO alerts (scan_id, severity, message) VALUES ($1, $2, $3)',
-                [scanId, 'high', `Billet suspect: ${currency}`]
-            );
+            await sql`
+                INSERT INTO alerts (scan_id, severity, message) 
+                VALUES (${scanId}, 'high', ${`Billet suspect: ${currency}`})
+            `;
         }
 
         res.json({
@@ -305,10 +293,12 @@ app.get('/api/scan/history', authenticateToken, async (req, res) => {
         const limit = parseInt(req.query.limit) || 50;
         const offset = parseInt(req.query.offset) || 0;
 
-        const result = await pool.query(
-            `SELECT * FROM scans WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-            [req.user.id, limit, offset]
-        );
+        const result = await sql`
+            SELECT * FROM scans 
+            WHERE user_id = ${req.user.id} 
+            ORDER BY created_at DESC 
+            LIMIT ${limit} OFFSET ${offset}
+        `;
 
         res.json(result.rows);
 
@@ -326,23 +316,35 @@ app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) =>
         const stats = {};
 
         // Total scans
-        const totalScans = await pool.query('SELECT COUNT(*) as total FROM scans');
+        const totalScans = await sql`SELECT COUNT(*) as total FROM scans`;
         stats.totalScans = parseInt(totalScans.rows[0].total);
 
         // Par authenticité
-        const byAuth = await pool.query('SELECT authenticity, COUNT(*) as count FROM scans GROUP BY authenticity');
+        const byAuth = await sql`
+            SELECT authenticity, COUNT(*) as count 
+            FROM scans 
+            GROUP BY authenticity
+        `;
         stats.byAuthenticity = byAuth.rows;
 
         // Par devise
-        const byCurr = await pool.query('SELECT currency, COUNT(*) as count FROM scans GROUP BY currency');
+        const byCurr = await sql`
+            SELECT currency, COUNT(*) as count 
+            FROM scans 
+            GROUP BY currency
+        `;
         stats.byCurrency = byCurr.rows;
 
         // Total users
-        const totalUsers = await pool.query('SELECT COUNT(*) as total FROM users');
+        const totalUsers = await sql`SELECT COUNT(*) as total FROM users`;
         stats.totalUsers = parseInt(totalUsers.rows[0].total);
 
         // Alertes non résolues
-        const alerts = await pool.query('SELECT COUNT(*) as total FROM alerts WHERE resolved = FALSE');
+        const alerts = await sql`
+            SELECT COUNT(*) as total 
+            FROM alerts 
+            WHERE resolved = FALSE
+        `;
         stats.unresolvedAlerts = parseInt(alerts.rows[0].total);
 
         res.json(stats);
@@ -358,14 +360,13 @@ app.get('/api/admin/scans', authenticateToken, requireAdmin, async (req, res) =>
     try {
         const limit = parseInt(req.query.limit) || 100;
 
-        const result = await pool.query(
-            `SELECT scans.*, users.username 
-             FROM scans 
-             JOIN users ON scans.user_id = users.id 
-             ORDER BY scans.created_at DESC 
-             LIMIT $1`,
-            [limit]
-        );
+        const result = await sql`
+            SELECT scans.*, users.username 
+            FROM scans 
+            JOIN users ON scans.user_id = users.id 
+            ORDER BY scans.created_at DESC 
+            LIMIT ${limit}
+        `;
 
         res.json(result.rows);
 
@@ -375,15 +376,26 @@ app.get('/api/admin/scans', authenticateToken, requireAdmin, async (req, res) =>
     }
 });
 
+// Initialiser la base (route admin)
+app.post('/api/admin/init-db', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        await initDatabase();
+        res.json({ message: 'Database initialized successfully' });
+    } catch (error) {
+        console.error('Error initializing DB:', error);
+        res.status(500).json({ error: 'Failed to initialize database' });
+    }
+});
+
 // Route racine
 app.get('/', (req, res) => {
     res.send(`
         <h1>Bill Checker API</h1>
-        <p>Backend fonctionnel ✅</p>
+        <p>Backend fonctionnel sur Vercel ✅</p>
         <ul>
-            <li>PostgreSQL: ✅</li>
+            <li>PostgreSQL (Vercel Postgres): ✅</li>
             <li>Cloudinary: ✅</li>
-            <li><a href="/api/admin/stats">Stats (nécessite authentification)</a></li>
+            <li><a href="/health">Health Check</a></li>
         </ul>
     `);
 });
@@ -391,22 +403,28 @@ app.get('/', (req, res) => {
 // Health check
 app.get('/health', async (req, res) => {
     try {
-        await pool.query('SELECT 1');
-        res.json({ status: 'ok', database: 'connected' });
+        const result = await sql`SELECT NOW()`;
+        res.json({ 
+            status: 'ok', 
+            database: 'connected',
+            timestamp: result.rows[0].now
+        });
     } catch (error) {
-        res.status(500).json({ status: 'error', database: 'disconnected' });
+        res.status(500).json({ 
+            status: 'error', 
+            database: 'disconnected',
+            error: error.message
+        });
     }
 });
 
-// Démarrage serveur
-app.listen(PORT, () => {
-    console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-    console.log(`📊 Admin: username=admin, password=admin123`);
-});
-
-// Gestion arrêt propre
-process.on('SIGINT', async () => {
-    await pool.end();
-    console.log('Base de données fermée');
-    process.exit(0);
-});
+// Pour Vercel serverless
+if (process.env.VERCEL) {
+    module.exports = app;
+} else {
+    // Pour développement local
+    app.listen(PORT, () => {
+        console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+        console.log(`📊 Admin: username=admin, password=admin123`);
+    });
+}
