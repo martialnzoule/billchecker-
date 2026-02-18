@@ -2,15 +2,15 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { sql } = require('@vercel/postgres');
+const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cloudinary = require('cloudinary').v2;
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'votre-secret-key-changez-en-production';
+const PORT = process.env.PORT || 10000;
+const JWT_SECRET = process.env.JWT_SECRET || 'billcheckerSecretKey123456789';
 
 // Configuration Cloudinary
 cloudinary.config({
@@ -19,15 +19,32 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Configuration PostgreSQL (Render fournit DATABASE_URL automatiquement)
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
+
+// Test connexion
+pool.connect((err, client, release) => {
+    if (err) {
+        console.error('❌ Erreur connexion PostgreSQL:', err);
+    } else {
+        console.log('✅ Connecté à PostgreSQL');
+        release();
+        initDatabase();
+    }
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-// Servir les fichiers frontend
 app.use(express.static('public'));
 
-// Configuration multer pour uploads temporaires
+// Configuration multer
 const storage = multer.memoryStorage();
 const upload = multer({ 
     storage: storage,
@@ -37,8 +54,7 @@ const upload = multer({
 // Initialiser les tables
 async function initDatabase() {
     try {
-        // Table users
-        await sql`
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(255) UNIQUE NOT NULL,
@@ -47,10 +63,9 @@ async function initDatabase() {
                 role VARCHAR(50) DEFAULT 'user',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `;
+        `);
 
-        // Table scans
-        await sql`
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS scans (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id),
@@ -63,10 +78,9 @@ async function initDatabase() {
                 recommendation TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `;
+        `);
 
-        // Table alerts
-        await sql`
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS alerts (
                 id SERIAL PRIMARY KEY,
                 scan_id INTEGER REFERENCES scans(id),
@@ -75,44 +89,30 @@ async function initDatabase() {
                 resolved BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `;
+        `);
 
         // Créer admin par défaut
-        const defaultPassword = await bcrypt.hash('admin123', 10);
-        
-        // Vérifier si admin existe
-        const existingAdmin = await sql`
-            SELECT * FROM users WHERE username = 'admin'
-        `;
-        
-        if (existingAdmin.rows.length === 0) {
-            await sql`
+        const existing = await pool.query(`SELECT id FROM users WHERE username = 'admin'`);
+        if (existing.rows.length === 0) {
+            const defaultPassword = await bcrypt.hash('admin123', 10);
+            await pool.query(`
                 INSERT INTO users (username, email, password, role) 
-                VALUES ('admin', 'admin@billchecker.com', ${defaultPassword}, 'admin')
-            `;
+                VALUES ('admin', 'admin@billchecker.com', $1, 'admin')
+            `, [defaultPassword]);
         }
 
-        console.log('✅ Database initialized');
+        console.log('✅ Base de données initialisée');
 
     } catch (error) {
-        console.error('❌ Error initializing database:', error);
+        console.error('❌ Erreur init DB:', error);
     }
 }
 
-// Initialiser la DB au démarrage (seulement en développement ou première fois)
-if (process.env.INIT_DB === 'true') {
-    initDatabase();
-}
-
-// Fonction pour uploader vers Cloudinary
+// Upload vers Cloudinary
 async function uploadToCloudinary(fileBuffer, fileName) {
     return new Promise((resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream(
-            {
-                folder: 'billchecker',
-                public_id: fileName,
-                resource_type: 'auto'
-            },
+            { folder: 'billchecker', public_id: fileName, resource_type: 'auto' },
             (error, result) => {
                 if (error) reject(error);
                 else resolve(result.secure_url);
@@ -122,19 +122,13 @@ async function uploadToCloudinary(fileBuffer, fileName) {
     });
 }
 
-// Middleware d'authentification
+// Middleware authentification
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        return res.status(401).json({ error: 'Token requis' });
-    }
-
+    if (!token) return res.status(401).json({ error: 'Token requis' });
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ error: 'Token invalide' });
-        }
+        if (err) return res.status(403).json({ error: 'Token invalide' });
         req.user = user;
         next();
     });
@@ -154,26 +148,17 @@ function requireAdmin(req, res, next) {
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { username, email, password } = req.body;
-
         if (!username || !email || !password) {
             return res.status(400).json({ error: 'Tous les champs requis' });
         }
-
         const hashedPassword = await bcrypt.hash(password, 10);
-
-        const result = await sql`
-            INSERT INTO users (username, email, password) 
-            VALUES (${username}, ${email}, ${hashedPassword}) 
-            RETURNING id
-        `;
-
-        res.status(201).json({ 
-            message: 'Utilisateur créé',
-            userId: result.rows[0].id
-        });
-
+        const result = await pool.query(
+            'INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id',
+            [username, email, hashedPassword]
+        );
+        res.status(201).json({ message: 'Utilisateur créé', userId: result.rows[0].id });
     } catch (error) {
-        if (error.message.includes('duplicate') || error.message.includes('unique')) {
+        if (error.code === '23505') {
             return res.status(400).json({ error: 'Username ou email déjà utilisé' });
         }
         console.error('Erreur inscription:', error);
@@ -185,39 +170,20 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-
-        const result = await sql`
-            SELECT * FROM users WHERE username = ${username}
-        `;
-
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
         const user = result.rows[0];
-
-        if (!user) {
-            return res.status(401).json({ error: 'Identifiants invalides' });
-        }
-
+        if (!user) return res.status(401).json({ error: 'Identifiants invalides' });
         const validPassword = await bcrypt.compare(password, user.password);
-
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Identifiants invalides' });
-        }
-
+        if (!validPassword) return res.status(401).json({ error: 'Identifiants invalides' });
         const token = jwt.sign(
             { id: user.id, username: user.username, role: user.role },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
-
         res.json({
             token,
-            user: {
-                id: user.id,
-                username: user.username,
-                email: user.email,
-                role: user.role
-            }
+            user: { id: user.id, username: user.username, email: user.email, role: user.role }
         });
-
     } catch (error) {
         console.error('Erreur login:', error);
         res.status(500).json({ error: 'Erreur serveur' });
@@ -230,56 +196,45 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/scan/analyze', authenticateToken, upload.single('image'), async (req, res) => {
     try {
         const { currency } = req.body;
-        
-        if (!req.file) {
-            return res.status(400).json({ error: 'Image requise' });
-        }
+        if (!req.file) return res.status(400).json({ error: 'Image requise' });
 
-        // Upload vers Cloudinary
         const fileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
         const imageUrl = await uploadToCloudinary(req.file.buffer, fileName);
 
-        // SIMULATION - Résultats aléatoires
         const authenticity = ['GENUINE', 'SUSPICIOUS', 'UNCERTAIN'][Math.floor(Math.random() * 3)];
-        const confidence = Math.floor(Math.random() * 40) + 60; // 60-100
+        const confidence = Math.floor(Math.random() * 40) + 60;
 
         const analysis = {
-            authenticity: authenticity,
-            confidence: confidence,
+            authenticity,
+            confidence,
             features_detected: [
                 'Filigrane détecté',
                 'Fil de sécurité visible',
                 'Impression en relief confirmée'
             ],
-            warnings: authenticity === 'SUSPICIOUS' ? ['Qualité d\'image insuffisante'] : [],
-            recommendation: authenticity === 'GENUINE' 
-                ? 'Le billet semble authentique' 
+            warnings: authenticity === 'SUSPICIOUS' ? ["Qualité d'image insuffisante"] : [],
+            recommendation: authenticity === 'GENUINE'
+                ? 'Le billet semble authentique'
                 : 'Vérification manuelle recommandée'
         };
 
-        // Sauvegarder dans la DB
-        const result = await sql`
-            INSERT INTO scans (user_id, currency, image_url, authenticity, confidence, features_detected, warnings, recommendation)
-            VALUES (${req.user.id}, ${currency}, ${imageUrl}, ${analysis.authenticity}, ${analysis.confidence}, 
-                    ${JSON.stringify(analysis.features_detected)}, ${JSON.stringify(analysis.warnings)}, ${analysis.recommendation})
-            RETURNING id
-        `;
+        const result = await pool.query(
+            `INSERT INTO scans (user_id, currency, image_url, authenticity, confidence, features_detected, warnings, recommendation)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+            [req.user.id, currency, imageUrl, analysis.authenticity, analysis.confidence,
+             JSON.stringify(analysis.features_detected), JSON.stringify(analysis.warnings), analysis.recommendation]
+        );
 
         const scanId = result.rows[0].id;
 
-        // Créer alerte si suspect
         if (analysis.authenticity === 'SUSPICIOUS') {
-            await sql`
-                INSERT INTO alerts (scan_id, severity, message) 
-                VALUES (${scanId}, 'high', ${`Billet suspect: ${currency}`})
-            `;
+            await pool.query(
+                'INSERT INTO alerts (scan_id, severity, message) VALUES ($1, $2, $3)',
+                [scanId, 'high', `Billet suspect: ${currency}`]
+            );
         }
 
-        res.json({
-            scanId,
-            ...analysis,
-            imageUrl: imageUrl
-        });
+        res.json({ scanId, ...analysis, imageUrl });
 
     } catch (error) {
         console.error('Erreur analyse:', error);
@@ -292,16 +247,11 @@ app.get('/api/scan/history', authenticateToken, async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 50;
         const offset = parseInt(req.query.offset) || 0;
-
-        const result = await sql`
-            SELECT * FROM scans 
-            WHERE user_id = ${req.user.id} 
-            ORDER BY created_at DESC 
-            LIMIT ${limit} OFFSET ${offset}
-        `;
-
+        const result = await pool.query(
+            'SELECT * FROM scans WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+            [req.user.id, limit, offset]
+        );
         res.json(result.rows);
-
     } catch (error) {
         console.error('Erreur historique:', error);
         res.status(500).json({ error: 'Erreur récupération' });
@@ -313,118 +263,67 @@ app.get('/api/scan/history', authenticateToken, async (req, res) => {
 // Statistiques
 app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        const stats = {};
+        const totalScans = await pool.query('SELECT COUNT(*) as total FROM scans');
+        const byAuth = await pool.query('SELECT authenticity, COUNT(*) as count FROM scans GROUP BY authenticity');
+        const byCurr = await pool.query('SELECT currency, COUNT(*) as count FROM scans GROUP BY currency');
+        const totalUsers = await pool.query('SELECT COUNT(*) as total FROM users');
+        const alerts = await pool.query('SELECT COUNT(*) as total FROM alerts WHERE resolved = FALSE');
 
-        // Total scans
-        const totalScans = await sql`SELECT COUNT(*) as total FROM scans`;
-        stats.totalScans = parseInt(totalScans.rows[0].total);
-
-        // Par authenticité
-        const byAuth = await sql`
-            SELECT authenticity, COUNT(*) as count 
-            FROM scans 
-            GROUP BY authenticity
-        `;
-        stats.byAuthenticity = byAuth.rows;
-
-        // Par devise
-        const byCurr = await sql`
-            SELECT currency, COUNT(*) as count 
-            FROM scans 
-            GROUP BY currency
-        `;
-        stats.byCurrency = byCurr.rows;
-
-        // Total users
-        const totalUsers = await sql`SELECT COUNT(*) as total FROM users`;
-        stats.totalUsers = parseInt(totalUsers.rows[0].total);
-
-        // Alertes non résolues
-        const alerts = await sql`
-            SELECT COUNT(*) as total 
-            FROM alerts 
-            WHERE resolved = FALSE
-        `;
-        stats.unresolvedAlerts = parseInt(alerts.rows[0].total);
-
-        res.json(stats);
-
+        res.json({
+            totalScans: parseInt(totalScans.rows[0].total),
+            byAuthenticity: byAuth.rows,
+            byCurrency: byCurr.rows,
+            totalUsers: parseInt(totalUsers.rows[0].total),
+            unresolvedAlerts: parseInt(alerts.rows[0].total)
+        });
     } catch (error) {
         console.error('Erreur stats:', error);
         res.status(500).json({ error: 'Erreur' });
     }
 });
 
-// Liste scans (admin)
+// Liste scans admin
 app.get('/api/admin/scans', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 100;
-
-        const result = await sql`
-            SELECT scans.*, users.username 
-            FROM scans 
-            JOIN users ON scans.user_id = users.id 
-            ORDER BY scans.created_at DESC 
-            LIMIT ${limit}
-        `;
-
+        const result = await pool.query(
+            `SELECT scans.*, users.username 
+             FROM scans 
+             JOIN users ON scans.user_id = users.id 
+             ORDER BY scans.created_at DESC 
+             LIMIT $1`,
+            [limit]
+        );
         res.json(result.rows);
-
     } catch (error) {
         console.error('Erreur liste scans:', error);
         res.status(500).json({ error: 'Erreur' });
     }
 });
 
-// Initialiser la base (route admin)
-app.post('/api/admin/init-db', authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        await initDatabase();
-        res.json({ message: 'Database initialized successfully' });
-    } catch (error) {
-        console.error('Error initializing DB:', error);
-        res.status(500).json({ error: 'Failed to initialize database' });
-    }
-});
-
 // Route racine
 app.get('/', (req, res) => {
-    res.send(`
-        <h1>Bill Checker API</h1>
-        <p>Backend fonctionnel sur Vercel ✅</p>
-        <ul>
-            <li>PostgreSQL (Vercel Postgres): ✅</li>
-            <li>Cloudinary: ✅</li>
-            <li><a href="/health">Health Check</a></li>
-        </ul>
-    `);
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Health check
 app.get('/health', async (req, res) => {
     try {
-        const result = await sql`SELECT NOW()`;
-        res.json({ 
-            status: 'ok', 
-            database: 'connected',
-            timestamp: result.rows[0].now
-        });
+        await pool.query('SELECT 1');
+        res.json({ status: 'ok', database: 'connected' });
     } catch (error) {
-        res.status(500).json({ 
-            status: 'error', 
-            database: 'disconnected',
-            error: error.message
-        });
+        res.status(500).json({ status: 'error', database: 'disconnected' });
     }
 });
 
-// Pour Vercel serverless
-if (process.env.VERCEL) {
-    module.exports = app;
-} else {
-    // Pour développement local
-    app.listen(PORT, () => {
-        console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-        console.log(`📊 Admin: username=admin, password=admin123`);
-    });
-}
+// Démarrage
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+    console.log(`📊 Admin: username=admin, password=admin123`);
+});
+
+process.on('SIGTERM', async () => {
+    await pool.end();
+    console.log('Base de données fermée');
+    process.exit(0);
+});
