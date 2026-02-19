@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paiement - Bill Checker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        .plan-info {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        .plan-info h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        .plan-info .price {
+            font-size: 32px;
+            font-weight: bold;
+            color: #333;
+        }
+        .payment-methods {
+            margin-top: 30px;
+        }
+        .payment-method {
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .payment-method:hover {
+            border-color: #667eea;
+            background: #f8f9fa;
+        }
+        .payment-method.selected {
+            border-color: #667eea;
+            background: #e8eaf6;
+        }
+        .payment-method h4 {
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .payment-method p {
+            color: #666;
+            font-size: 14px;
+        }
+        .phone-input {
+            margin-top: 15px;
+            display: none;
+        }
+        .phone-input.show {
+            display: block;
+        }
+        .phone-input input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        .phone-input input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 30px;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .message {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            display: none;
+        }
+        .loading.show {
+            display: block;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💳 Paiement sécurisé</h1>
+        
+        <div class="plan-info">
+            <h3 id="planName">Plan Premium</h3>
+            <div class="price" id="planPrice">5000 FCFA/mois</div>
+            <p>✓ Scans illimités • ✓ Analyse IA avancée • ✓ Support prioritaire</p>
+        </div>
+
+        <div id="message" class="message"></div>
+
+        <div class="payment-methods">
+            <h3 style="margin-bottom: 15px; color: #333;">Choisissez votre mode de paiement</h3>
+            
+            <!-- Mobile Money (Lygos) -->
+            <div class="payment-method" id="lygos-method" onclick="selectMethod('lygos')">
+                <h4>📱 Mobile Money</h4>
+                <p>Orange Money • MTN Mobile Money • Moov Money</p>
+                <div class="phone-input" id="phone-input">
+                    <input type="tel" id="phone" placeholder="Exemple: 237690123456" pattern="[0-9]{12}">
+                    <small style="color: #666; display: block; margin-top: 5px;">Format: 237XXXXXXXXX (avec indicatif pays)</small>
+                </div>
+            </div>
+
+            <!-- PayPal -->
+            <div class="payment-method" id="paypal-method" onclick="selectMethod('paypal')">
+                <h4>💎 PayPal</h4>
+                <p>Carte bancaire • Compte PayPal</p>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 15px; color: #666;">Traitement en cours...</p>
+        </div>
+
+        <button id="payBtn" onclick="processPayment()" disabled>Sélectionnez un mode de paiement</button>
+    </div>
+
+    <script src="https://www.paypal.com/sdk/js?client-id=YOUR_PAYPAL_CLIENT_ID&currency=USD"></script>
+    <script>
+        const API_URL = '/.netlify/functions/api';
+        const urlParams = new URLSearchParams(window.location.search);
+        const plan = urlParams.get('plan') || 'premium';
+        
+        let selectedMethod = null;
+        const token = localStorage.getItem('token');
+
+        if (!token) {
+            alert('Veuillez vous connecter');
+            window.location.href = '/index.html';
+        }
+
+        // Configuration des plans
+        const plans = {
+            premium: {
+                name: 'Premium',
+                price: '5000 FCFA',
+                priceUSD: 8,
+                priceXAF: 5000
+            },
+            business: {
+                name: 'Business',
+                price: '10000 FCFA',
+                priceUSD: 15,
+                priceXAF: 10000
+            }
+        };
+
+        // Afficher les infos du plan
+        document.getElementById('planName').textContent = `Plan ${plans[plan].name}`;
+        document.getElementById('planPrice').textContent = `${plans[plan].price}/mois`;
+
+        function selectMethod(method) {
+            selectedMethod = method;
+            
+            // Reset tous les méthodes
+            document.querySelectorAll('.payment-method').forEach(m => m.classList.remove('selected'));
+            document.getElementById('phone-input').classList.remove('show');
+            
+            // Sélectionner la méthode
+            if (method === 'lygos') {
+                document.getElementById('lygos-method').classList.add('selected');
+                document.getElementById('phone-input').classList.add('show');
+                document.getElementById('payBtn').textContent = 'Payer avec Mobile Money';
+            } else if (method === 'paypal') {
+                document.getElementById('paypal-method').classList.add('selected');
+                document.getElementById('payBtn').textContent = 'Payer avec PayPal';
+            }
+            
+            document.getElementById('payBtn').disabled = false;
+        }
+
+        async function processPayment() {
+            if (!selectedMethod) {
+                showMessage('error', 'Veuillez sélectionner un mode de paiement');
+                return;
+            }
+
+            if (selectedMethod === 'lygos') {
+                await processLygos();
+            } else if (selectedMethod === 'paypal') {
+                await processPayPal();
+            }
+        }
+
+        async function processLygos() {
+            const phone = document.getElementById('phone').value;
+            
+            if (!phone || phone.length < 12) {
+                showMessage('error', 'Veuillez entrer un numéro valide (format: 237XXXXXXXXX)');
+                return;
+            }
+
+            showLoading(true);
+
+            try {
+                const response = await fetch(`${API_URL}/payment/lygos/initiate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        plan,
+                        phone_number: phone
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage('success', 'Redirection vers le paiement...');
+                    setTimeout(() => {
+                        window.location.href = data.payment_url;
+                    }, 1500);
+                } else {
+                    showMessage('error', data.error || 'Erreur lors de l\'initiation du paiement');
+                }
+            } catch (error) {
+                showMessage('error', 'Erreur de connexion au serveur');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function processPayPal() {
+            showLoading(true);
+
+            try {
+                const response = await fetch(`${API_URL}/payment/paypal/create`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ plan })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage('success', 'Redirection vers PayPal...');
+                    setTimeout(() => {
+                        window.location.href = data.approvalUrl;
+                    }, 1500);
+                } else {
+                    showMessage('error', data.error || 'Erreur création commande PayPal');
+                }
+            } catch (error) {
+                showMessage('error', 'Erreur de connexion au serveur');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function showMessage(type, text) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = text;
+            messageDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                messageDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('show', show);
+            document.getElementById('payBtn').disabled = show;
+        }
+    </script>
+</body>
+</html>
