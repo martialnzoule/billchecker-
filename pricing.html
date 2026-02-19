@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tarifs - Bill Checker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 50px;
+        }
+        .header h1 {
+            font-size: 42px;
+            margin-bottom: 10px;
+        }
+        .header p {
+            font-size: 18px;
+            opacity: 0.9;
+        }
+        .pricing-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 40px 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            transition: transform 0.3s;
+            position: relative;
+        }
+        .card:hover {
+            transform: translateY(-10px);
+        }
+        .card.premium {
+            border: 3px solid #667eea;
+            transform: scale(1.05);
+        }
+        .badge {
+            position: absolute;
+            top: -15px;
+            right: 20px;
+            background: #667eea;
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .card h2 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 15px;
+        }
+        .price {
+            font-size: 42px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        .price span {
+            font-size: 18px;
+            color: #666;
+        }
+        .card ul {
+            list-style: none;
+            margin: 30px 0;
+        }
+        .card li {
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+            color: #555;
+        }
+        .card li:last-child {
+            border-bottom: none;
+        }
+        .card li::before {
+            content: "✓ ";
+            color: #4CAF50;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .card li.disabled::before {
+            content: "✗ ";
+            color: #ccc;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.3s;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .back-link {
+            text-align: center;
+            margin-top: 40px;
+        }
+        .back-link a {
+            color: white;
+            text-decoration: none;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>💎 Choisissez votre plan</h1>
+        <p>Passez à l'authentification IA professionnelle</p>
+    </div>
+
+    <div class="pricing-cards">
+        <!-- Plan Gratuit -->
+        <div class="card">
+            <h2>Gratuit</h2>
+            <div class="price">0 <span>FCFA/mois</span></div>
+            <ul>
+                <li>5 scans par mois</li>
+                <li>Analyse IA de base</li>
+                <li>Historique 30 jours</li>
+                <li class="disabled">Export PDF</li>
+                <li class="disabled">Support prioritaire</li>
+            </ul>
+            <button disabled>Plan actuel</button>
+        </div>
+
+        <!-- Plan Premium -->
+        <div class="card premium">
+            <span class="badge">⭐ Populaire</span>
+            <h2>Premium</h2>
+            <div class="price">5000 <span>FCFA/mois</span></div>
+            <ul>
+                <li>Scans illimités</li>
+                <li>Analyse IA avancée</li>
+                <li>Historique complet</li>
+                <li>Export PDF</li>
+                <li>Support prioritaire</li>
+                <li>Rapports détaillés</li>
+            </ul>
+            <button onclick="selectPlan('premium')">Choisir Premium</button>
+        </div>
+
+        <!-- Plan Business -->
+        <div class="card">
+            <h2>Business</h2>
+            <div class="price">50000 <span>FCFA/mois</span></div>
+            <ul>
+                <li>Tout du Premium</li>
+                <li>Multi-utilisateurs (5+)</li>
+                <li>API access</li>
+                <li>Rapports mensuels</li>
+                <li>Support dédié 24/7</li>
+                <li>Formation personnalisée</li>
+            </ul>
+            <button onclick="selectPlan('business')">Choisir Business</button>
+        </div>
+    </div>
+
+    <div class="back-link">
+        <a href="/dashboard.html">← Retour au dashboard</a>
+    </div>
+
+    <script>
+        function selectPlan(plan) {
+            // Sauvegarder le plan sélectionné
+            localStorage.setItem('selectedPlan', plan);
+            // Rediriger vers la page de paiement
+            window.location.href = `/payment.html?plan=${plan}`;
+        }
+
+        // Vérifier si l'utilisateur est connecté
+        const token = localStorage.getItem('token');
+        if (!token) {
+            alert('Veuillez vous connecter pour souscrire à un plan');
+            window.location.href = '/index.html';
+        }
+
+        // Récupérer le plan actuel de l'utilisateur
+        async function getCurrentPlan() {
+            try {
+                const response = await fetch('/.netlify/functions/api/subscription/status', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (response.ok) {
+                    const subscription = await response.json();
+                    updateButtonStates(subscription.plan);
+                }
+            } catch (error) {
+                console.error('Erreur récupération plan:', error);
+            }
+        }
+
+        function updateButtonStates(currentPlan) {
+            const buttons = document.querySelectorAll('button');
+            const cards = document.querySelectorAll('.card');
+            
+            cards.forEach((card, index) => {
+                const plans = ['free', 'premium', 'business'];
+                const cardPlan = plans[index];
+                
+                if (cardPlan === currentPlan) {
+                    buttons[index].textContent = 'Plan actuel';
+                    buttons[index].disabled = true;
+                    card.style.border = '3px solid #4CAF50';
+                }
+            });
+        }
+
+        getCurrentPlan();
+    </script>
+</body>
+</html>
