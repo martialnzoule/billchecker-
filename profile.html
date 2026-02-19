@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mon Profil - Bill Checker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .info-group {
+            margin-bottom: 25px;
+        }
+        .info-group label {
+            display: block;
+            color: #666;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .info-group .value {
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            color: #333;
+        }
+        .plan-info {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 30px 0;
+        }
+        .plan-info h3 {
+            margin-bottom: 10px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            text-decoration: none;
+            text-align: center;
+            margin: 5px;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-secondary {
+            background: #95a5a6;
+            color: white;
+        }
+        .actions {
+            margin-top: 30px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>👤 Mon Profil</h1>
+        
+        <div class="info-group">
+            <label>Nom d'utilisateur</label>
+            <div class="value" id="username">-</div>
+        </div>
+        
+        <div class="info-group">
+            <label>Email</label>
+            <div class="value" id="email">-</div>
+        </div>
+        
+        <div class="info-group">
+            <label>Rôle</label>
+            <div class="value" id="role">-</div>
+        </div>
+        
+        <div class="plan-info">
+            <h3>📊 Mon Abonnement</h3>
+            <p><strong>Plan actuel :</strong> <span id="plan">Free</span></p>
+            <p><strong>Scans utilisés :</strong> <span id="scansUsed">0</span> / <span id="scansLimit">5</span></p>
+        </div>
+        
+        <div class="actions">
+            <a href="/pricing.html" class="btn btn-primary">⭐ Améliorer mon plan</a>
+            <a href="/dashboard.html" class="btn btn-secondary">← Retour au dashboard</a>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = '/.netlify/functions/api';
+        const token = localStorage.getItem('token');
+
+        if (!token) {
+            window.location.href = '/index.html';
+        }
+
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        document.getElementById('username').textContent = user.username || '-';
+        document.getElementById('email').textContent = user.email || '-';
+        document.getElementById('role').textContent = user.role || 'user';
+
+        async function loadSubscription() {
+            try {
+                const response = await fetch(`${API_URL}/subscription/status`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (response.ok) {
+                    const subscription = await response.json();
+                    document.getElementById('plan').textContent = subscription.plan.toUpperCase();
+                    document.getElementById('scansUsed').textContent = subscription.scans_used || 0;
+                    document.getElementById('scansLimit').textContent = subscription.scans_limit || 'Illimité';
+                }
+            } catch (error) {
+                console.error('Erreur chargement abonnement:', error);
+            }
+        }
+
+        loadSubscription();
+    </script>
+</body>
+</html>
