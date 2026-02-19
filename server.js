@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cloudinary = require('cloudinary').v2;
+const OpenAI = require('openai');
 const path = require('path');
 
 const app = express();
@@ -19,7 +20,12 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Configuration PostgreSQL (Render fournit DATABASE_URL automatiquement)
+// Configuration OpenAI
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+});
+
+// Configuration PostgreSQL
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
@@ -122,6 +128,94 @@ async function uploadToCloudinary(fileBuffer, fileName) {
     });
 }
 
+// Analyse avec OpenAI GPT-4 Vision
+async function analyzeWithOpenAI(imageUrl, currency) {
+    try {
+        console.log('🤖 Analyse IA en cours...');
+        
+        const response = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: `Tu es un expert en détection de faux billets de banque. Analyse cette image de billet (devise indiquée: ${currency}) et fournis une évaluation détaillée.
+
+IMPORTANT: Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou après, sans balises markdown. Format exact:
+
+{
+  "currency": "devise détectée (ex: USD, EUR, XAF)",
+  "denomination": "valeur du billet (ex: 100, 50)",
+  "authenticity": "GENUINE ou SUSPICIOUS ou UNCERTAIN",
+  "confidence": nombre entre 60 et 100,
+  "features_detected": ["liste", "des", "éléments", "détectés"],
+  "warnings": ["liste", "des", "anomalies"],
+  "recommendation": "recommandation finale"
+}
+
+Critères d'analyse:
+- Filigrane visible
+- Fil de sécurité métallique
+- Hologrammes
+- Impression en relief
+- Qualité du papier
+- Couleurs et motifs
+- Numéros de série
+
+Si le billet semble authentique: authenticity = "GENUINE", confidence = 85-95
+Si des anomalies mineures: authenticity = "UNCERTAIN", confidence = 70-84
+Si très suspect: authenticity = "SUSPICIOUS", confidence = 60-69`
+                        },
+                        {
+                            type: "image_url",
+                            image_url: {
+                                url: imageUrl
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens: 800,
+            temperature: 0.3
+        });
+
+        const content = response.choices[0].message.content.trim();
+        
+        // Nettoyer la réponse (enlever markdown si présent)
+        let cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+        const analysis = JSON.parse(cleanContent);
+        
+        console.log('✅ Analyse IA terminée:', analysis.authenticity);
+        
+        return {
+            currency: analysis.currency || currency,
+            denomination: analysis.denomination || 'Inconnu',
+            authenticity: analysis.authenticity,
+            confidence: analysis.confidence,
+            features_detected: analysis.features_detected || [],
+            warnings: analysis.warnings || [],
+            recommendation: analysis.recommendation
+        };
+
+    } catch (error) {
+        console.error('❌ Erreur analyse OpenAI:', error.message);
+        
+        // Fallback en cas d'erreur
+        return {
+            currency: currency,
+            denomination: 'Non déterminé',
+            authenticity: 'UNCERTAIN',
+            confidence: 65,
+            features_detected: ['Analyse automatique non disponible'],
+            warnings: ['Erreur lors de l\'analyse IA. Vérification manuelle recommandée.'],
+            recommendation: 'Impossible d\'analyser automatiquement. Veuillez consulter un expert.'
+        };
+    }
+}
+
 // Middleware authentification
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
@@ -192,52 +286,50 @@ app.post('/api/auth/login', async (req, res) => {
 
 // ============ ROUTES SCAN ============
 
-// Analyser un billet
+// Analyser un billet avec OpenAI
 app.post('/api/scan/analyze', authenticateToken, upload.single('image'), async (req, res) => {
     try {
         const { currency } = req.body;
         if (!req.file) return res.status(400).json({ error: 'Image requise' });
 
+        console.log(`📸 Nouveau scan: ${currency}`);
+
+        // Upload vers Cloudinary
         const fileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
         const imageUrl = await uploadToCloudinary(req.file.buffer, fileName);
+        console.log('✅ Image uploadée sur Cloudinary');
 
-        const authenticity = ['GENUINE', 'SUSPICIOUS', 'UNCERTAIN'][Math.floor(Math.random() * 3)];
-        const confidence = Math.floor(Math.random() * 40) + 60;
+        // Analyse avec OpenAI
+        const analysis = await analyzeWithOpenAI(imageUrl, currency);
 
-        const analysis = {
-            authenticity,
-            confidence,
-            features_detected: [
-                'Filigrane détecté',
-                'Fil de sécurité visible',
-                'Impression en relief confirmée'
-            ],
-            warnings: authenticity === 'SUSPICIOUS' ? ["Qualité d'image insuffisante"] : [],
-            recommendation: authenticity === 'GENUINE'
-                ? 'Le billet semble authentique'
-                : 'Vérification manuelle recommandée'
-        };
-
+        // Sauvegarder dans la DB
         const result = await pool.query(
             `INSERT INTO scans (user_id, currency, image_url, authenticity, confidence, features_detected, warnings, recommendation)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-            [req.user.id, currency, imageUrl, analysis.authenticity, analysis.confidence,
+            [req.user.id, analysis.currency, imageUrl, analysis.authenticity, analysis.confidence,
              JSON.stringify(analysis.features_detected), JSON.stringify(analysis.warnings), analysis.recommendation]
         );
 
         const scanId = result.rows[0].id;
 
+        // Créer alerte si suspect
         if (analysis.authenticity === 'SUSPICIOUS') {
             await pool.query(
                 'INSERT INTO alerts (scan_id, severity, message) VALUES ($1, $2, $3)',
-                [scanId, 'high', `Billet suspect: ${currency}`]
+                [scanId, 'high', `Billet suspect détecté: ${analysis.currency} ${analysis.denomination}`]
             );
         }
 
-        res.json({ scanId, ...analysis, imageUrl });
+        console.log(`✅ Scan ${scanId} enregistré: ${analysis.authenticity} (${analysis.confidence}%)`);
+
+        res.json({ 
+            scanId, 
+            ...analysis, 
+            imageUrl 
+        });
 
     } catch (error) {
-        console.error('Erreur analyse:', error);
+        console.error('❌ Erreur analyse:', error);
         res.status(500).json({ error: 'Erreur analyse' });
     }
 });
@@ -310,7 +402,12 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
     try {
         await pool.query('SELECT 1');
-        res.json({ status: 'ok', database: 'connected' });
+        const openaiStatus = process.env.OPENAI_API_KEY ? 'configured' : 'not configured';
+        res.json({ 
+            status: 'ok', 
+            database: 'connected',
+            openai: openaiStatus
+        });
     } catch (error) {
         res.status(500).json({ status: 'error', database: 'disconnected' });
     }
@@ -320,6 +417,7 @@ app.get('/health', async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Serveur démarré sur le port ${PORT}`);
     console.log(`📊 Admin: username=admin, password=admin123`);
+    console.log(`🤖 OpenAI: ${process.env.OPENAI_API_KEY ? 'Configuré ✅' : 'Non configuré ⚠️'}`);
 });
 
 process.on('SIGTERM', async () => {
